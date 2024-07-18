@@ -10,8 +10,10 @@ from termcolor import cprint
 from tqdm import tqdm
 
 from src.datasets import ThingsMEGDataset
-from src.models import BasicConvClassifier
+from src.models import BasicConvClassifier, BasicConv2DClassifier
+# EEGClassifier
 from src.utils import set_seed
+import sys
 
 
 @hydra.main(version_base=None, config_path="configs", config_name="config")
@@ -27,20 +29,23 @@ def run(args: DictConfig):
     # ------------------
     loader_args = {"batch_size": args.batch_size, "num_workers": args.num_workers}
     
-    train_set = ThingsMEGDataset("train", args.data_dir)
-    train_loader = torch.utils.data.DataLoader(train_set, shuffle=True, **loader_args)
-    val_set = ThingsMEGDataset("val", args.data_dir)
-    val_loader = torch.utils.data.DataLoader(val_set, shuffle=False, **loader_args)
     test_set = ThingsMEGDataset("test", args.data_dir)
     test_loader = torch.utils.data.DataLoader(
         test_set, shuffle=False, batch_size=args.batch_size, num_workers=args.num_workers
     )
+    val_set = ThingsMEGDataset("val", args.data_dir)
+    val_loader = torch.utils.data.DataLoader(val_set, shuffle=False, **loader_args)
+    train_set = ThingsMEGDataset("train", args.data_dir)
+    train_loader = torch.utils.data.DataLoader(train_set, shuffle=True, **loader_args)
 
     # ------------------
     #       Model
     # ------------------
-    model = BasicConvClassifier(
-        train_set.num_classes, train_set.seq_len, train_set.num_channels
+    # model = BasicConvClassifier(
+    #     train_set.num_classes, train_set.seq_len, train_set.num_channels+1
+    # ).to(args.device)
+    model = BasicConv2DClassifier(
+        train_set.num_classes, train_set.num_channels+1, train_set.seq_len
     ).to(args.device)
 
     # ------------------
@@ -63,7 +68,21 @@ def run(args: DictConfig):
         
         model.train()
         for X, y, subject_idxs in tqdm(train_loader, desc="Train"):
-            X, y = X.to(args.device), y.to(args.device)
+            # print(X.shape)
+            # print(y.shape)
+            # print(subject_idxs.min())
+            # print(subject_idxs.max())
+
+            batch_size, _, seq_len = X.shape
+            X, y, subject_idxs = X.to(args.device), y.to(args.device), subject_idxs.to(args.device)
+
+            subject_idxs = subject_idxs.unsqueeze(1).unsqueeze(2).expand(-1, 1, seq_len)
+
+            # print(f"X.shape: {X.dtype}")
+            # print(f"subjecit_idxs.shape: {subject_idxs.dtype}")
+
+
+            X = torch.cat((X, subject_idxs), dim=1)
 
             y_pred = model(X)
             
@@ -76,10 +95,18 @@ def run(args: DictConfig):
             
             acc = accuracy(y_pred, y)
             train_acc.append(acc.item())
+            # sys.exit()
 
         model.eval()
         for X, y, subject_idxs in tqdm(val_loader, desc="Validation"):
-            X, y = X.to(args.device), y.to(args.device)
+            batch_size, _, seq_len = X.shape
+            X, y, subject_idxs = X.to(args.device), y.to(args.device), subject_idxs.to(args.device)
+
+            subject_idxs = subject_idxs.unsqueeze(1).unsqueeze(2).expand(-1, 1, seq_len)
+
+
+            X = torch.cat((X, subject_idxs), dim=1)
+
             
             with torch.no_grad():
                 y_pred = model(X)
@@ -105,7 +132,11 @@ def run(args: DictConfig):
 
     preds = [] 
     model.eval()
-    for X, subject_idxs in tqdm(test_loader, desc="Validation"):        
+    for X, subject_idxs in tqdm(test_loader, desc="Validation"):
+        subject_idxs = subject_idxs.unsqueeze(1).unsqueeze(2).expand(-1, 1, seq_len)
+
+        X = torch.cat((X, subject_idxs), dim=1)        
+
         preds.append(model(X.to(args.device)).detach().cpu())
         
     preds = torch.cat(preds, dim=0).numpy()
